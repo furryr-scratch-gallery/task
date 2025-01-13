@@ -1,18 +1,17 @@
 import { defineConfig } from 'tsup'
 
 export default defineConfig({
-  name: 'scratch-ext', // Replace it with your extension name
+  name: 'task', // Replace it with your extension name
   entry: ['src/index.ts', 'src/index.js'],
   target: ['esnext'],
   format: ['iife'],
   outDir: 'dist',
   banner: {
     // Replace it with your extension's metadata
-    js: `// Name: FurryR's example Extension
-// ID: newExtension
-// Description: Scaffolding for Advanced Scratch extensions.
-// By: You
-// Original: Me
+    js: `// Name: Task
+// ID: task
+// Description: Dealing with stuffs that don't respond immediately.
+// By: FurryR
 // License: MPL-2.0
 `
   },
