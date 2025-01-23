@@ -61,6 +61,13 @@ import type { Map as ImmutableMap } from 'immutable'
           task: this.descendInputOfBlock(block, 'TASK')
         }
       }
+      case 'task_awaitNoReturn': {
+        this.script.yields = true
+        return {
+          kind: 'task.awaitNoReturn',
+          task: this.descendInputOfBlock(block, 'TASK')
+        }
+      }
       case 'task_status': {
         return {
           kind: 'task.status',
@@ -96,13 +103,13 @@ import type { Map as ImmutableMap } from 'immutable'
       }
       case 'task.await': {
         return new TypedInput(
-          `(executeInCompatibilityLayer, yield* (function*(task){return task instanceof globalState.thread.target.runtime.Task ? yield* waitPromise(task.promise) : task;})(${this.descendInput(node.task).asUnknown()}))`,
+          `(yield* (executeInCompatibilityLayer, globalState.thread.target.runtime.Task.intrinsics.await)(${this.descendInput(node.task).asUnknown()}, waitPromise))`,
           TYPE_UNKNOWN
         )
       }
       case 'task.status': {
         return new TypedInput(
-          `(v => !(v instanceof globalState.thread.target.runtime.Task) || v.done)(${this.descendInput(node.task).asUnknown()}))`,
+          `(globalState.thread.target.runtime.Task.intrinsics.status(${this.descendInput(node.task).asUnknown()}))`,
           TYPE_BOOLEAN
         )
       }
@@ -113,12 +120,12 @@ import type { Map as ImmutableMap } from 'immutable'
         const substack = node.substack
         if (!substack) {
           return new TypedInput(
-            "((()=>{const task=new globalState.thread.target.runtime.Task; task.resolve(''); return task;})())",
+            "(globalState.thread.target.runtime.Task.resolve(''))",
             TYPE_UNKNOWN
           )
         }
         return new TypedInput(
-          `((substack=>{const task=new globalState.thread.target.runtime.Task; const newThread=globalState.thread.target.runtime._pushThread(substack, globalState.thread.target); Object.assign(newThread, {task}); let status=newThread.status; Object.defineProperty(newThread, 'status', {get: () => status, set(value) {status=value; if (status === newThread.constructor.STATUS_DONE && newThread.task) newThread.task.resolve(''); }}); return task;})(${JSON.stringify(substack)}))`,
+          `(globalState.thread.target.runtime.Task.intrinsics.async(${JSON.stringify(substack)}, globalState.thread.target))`,
           TYPE_UNKNOWN
         )
       }
@@ -130,7 +137,11 @@ import type { Map as ImmutableMap } from 'immutable'
   JSGenerator.prototype.descendStackedBlock = function (node: any) {
     switch (node.kind) {
       case 'task.resolve': {
-        this.source += `((task,value)=>{task instanceof globalState.thread.target.runtime.Task && task.resolve(value);})(${this.descendInput(node.task).asUnknown()},${this.descendInput(node.value).asUnknown()});\n`
+        this.source += `globalState.thread.target.runtime.Task.intrinsics.resolve(${this.descendInput(node.task).asUnknown()},${this.descendInput(node.value).asUnknown()});\n`
+        return
+      }
+      case 'task.awaitNoReturn': {
+        this.source += `yield* (executeInCompatibilityLayer, globalState.thread.target.runtime.Task.intrinsics.await)(${this.descendInput(node.task).asUnknown()}, waitPromise);\n`
         return
       }
       default:
@@ -139,19 +150,75 @@ import type { Map as ImmutableMap } from 'immutable'
   }
 
   class Task {
+    static resolve(value: any): Task {
+      const task = new Task()
+      task.resolve(value)
+      return task
+    }
+    static readonly intrinsics = {
+      async(substack: string, target: VM.Target): Task {
+        const task = new Task()
+        // Create a thread
+        const newThread = vm.runtime._pushThread(substack, target)
+        Object.assign(newThread, {
+          task
+        })
+        let status = newThread.status
+        Object.defineProperty(task, 'status', {
+          get() {
+            return status
+          },
+          set(value) {
+            status = value
+            if (value === VM.ThreadStatus.STATUS_DONE) {
+              task.resolve('')
+            }
+          }
+        })
+        return task
+      },
+      *await(
+        task: unknown,
+        waitPromise: <T>(pm: PromiseLike<T>) => Generator<any, T, any>
+      ): unknown {
+        if (task instanceof Task) {
+          if (task.done) return task.result
+          return yield* waitPromise(task.promise)
+        }
+        return task
+      },
+      resolve(task: unknown, value: unknown): void {
+        if (task instanceof Task) {
+          task.resolve(value)
+        }
+      },
+      status(task: unknown): boolean {
+        if (task instanceof Task) {
+          return task.done
+        }
+        return true
+      }
+    }
     private _fulfill: (value: unknown) => void
     promise: Promise<unknown>
-    private _result: unknown
-    _done: boolean = false
-    constructor() {
+    private _result: unknown = undefined
+    private _done: boolean = false
+    constructor(pm?: PromiseLike<unknown>) {
       this._fulfill = () => {
         throw new Error('Task is not initialized')
       }
       this.promise = new Promise(resolve => {
         this._fulfill = resolve
       })
+      if (pm) {
+        pm.then(
+          value => this.resolve(value),
+          err => this.resolve(err)
+        )
+      }
     }
     resolve(value: unknown) {
+      if (this._done) return
       this._fulfill(value)
       this._result = value
       this._done = true
@@ -163,11 +230,13 @@ import type { Map as ImmutableMap } from 'immutable'
       return this._done
     }
     toString() {
-      return this._done ? 'fulfilled' : 'pending'
+      return this._done ? String(this._result) : ''
     }
     toLocaleString() {
       return this._done
-        ? Scratch.translate('<fulfilled task>')
+        ? Scratch.translate('<fulfilled task with {RESULT}>', {
+            RESULT: String(this._result)
+          })
         : Scratch.translate('<pending task>')
     }
   }
@@ -240,6 +309,11 @@ import type { Map as ImmutableMap } from 'immutable'
             opcode: 'await',
             text: Scratch.translate('await [TASK]')
           },
+          {
+            blockType: Scratch.BlockType.COMMAND,
+            opcode: 'awaitNoReturn',
+            text: Scratch.translate('await [TASK]')
+          },
           '---' as const,
           {
             blockType: Scratch.BlockType.REPORTER,
@@ -264,50 +338,33 @@ import type { Map as ImmutableMap } from 'immutable'
     async(args: object, util: VM.BlockUtility) {
       const { thread } = util
       const block = this.getActiveBlockInstance(args, thread)
-      const task = new Task()
       if (!block.inputs.SUBSTACK) {
-        task.resolve('')
-        return task
+        return Task.resolve('')
       }
-      const substack = block.inputs.SUBSTACK.block
-      // Create a thread
-      const newThread = vm.runtime._pushThread(substack, util.target)
-      Object.assign(newThread, {
-        task
-      })
-      let status = newThread.status
-      Object.defineProperty(task, 'status', {
-        get() {
-          return status
-        },
-        set(value) {
-          status = value
-          if (value === VM.ThreadStatus.STATUS_DONE) {
-            task.resolve('')
-          }
-        }
-      })
-      return task
+      return Task.intrinsics.async(block.inputs.SUBSTACK.block, thread.target)
     }
     resolve(args: { TASK: unknown; VALUE: unknown }) {
-      const task = args.TASK
-      if (task instanceof Task) {
-        task.resolve(args.VALUE)
-      }
+      Task.intrinsics.resolve(args.TASK, args.VALUE)
     }
     await(args: { TASK: unknown }) {
       const task = args.TASK
       if (task instanceof Task) {
-        return task.promise
+        return task.done ? task.result : task.promise
       }
       return task
+    }
+    awaitNoReturn(args: { TASK: unknown }): void | Promise<void> {
+      const task = args.TASK
+      if (task instanceof Task && !task.done) {
+        return task.promise.then(() => undefined) as Promise<void>
+      }
+      return
     }
     current(_: never, util: VM.BlockUtility) {
       return (util.thread as any).task ?? ''
     }
     status(args: { TASK: unknown }) {
-      const task = args.TASK
-      return !(task instanceof Task) || task.done
+      return Task.intrinsics.status(args.TASK)
     }
     /**
      * Get active block instance of specified thread.

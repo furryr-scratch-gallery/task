@@ -10,6 +10,6 @@ export default {
     _async: '异步运行',
     '_current task': '当前任务',
     '_<pending task>': '<未完成的任务>',
-    '_<fulfilled task>': '<已完成的任务>'
+    '_<fulfilled task with {RESULT}>': '<结果为 {RESULT} 的已完成的任务>'
   }
 }
