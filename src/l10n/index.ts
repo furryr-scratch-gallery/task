@@ -4,7 +4,7 @@ export default {
   'zh-cn': {
     _Task: '任务',
     '_new task': '新任务',
-    '_resolve [TASK] with [VALUE]': '以 [VALUE] 解决 [TASK]',
+    '_resolve [TASK] with [VALUE]': '以 [VALUE] 完成 [TASK]',
     '_[TASK] done?': '[TASK] 已完成?',
     '_await [TASK]': '等待 [TASK]',
     _async: '异步运行',

@@ -291,7 +291,7 @@ import type { Map as ImmutableMap } from 'immutable'
           {
             blockType: Scratch.BlockType.COMMAND,
             opcode: 'resolve',
-            text: Scratch.translate('resolve [TASK] with [VALUE]'),
+            text: Scratch.translate('complete [TASK] with [VALUE]'),
             arguments: {
               VALUE: {
                 type: Scratch.ArgumentType.STRING,
